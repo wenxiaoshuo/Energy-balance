@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 import os
 import pandas as pd
 import time
@@ -8,8 +8,27 @@ import win32com.client as win32
 # === 依赖库检查 ===
 try:
     from docx import Document
+    from docx.shared import Pt, RGBColor
+    from docx.oxml.ns import qn
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
 except ImportError:
     messagebox.showerror("缺少库", "请先安装 python-docx！\n运行: pip install python-docx")
+
+# ==========================================
+# 0. 模块中英文映射字典
+# ==========================================
+BLOCK_TYPE_MAP = {
+    "HEATX": "换热器",
+    "HEATER": "加热器/冷却器",
+    "RADFRAC": "严格精馏塔",
+    "MCOMPR": "多段压缩机",
+    "FLASH2": "两相闪蒸罐",
+    "FLASH3": "三相闪蒸罐",
+    "PUMP": "泵",
+    "COMPR": "压缩机",
+    "RPLUG": "平推流反应器",
+    "RSTOIC": "化学计量反应器"
+}
 
 
 # ==========================================
@@ -54,8 +73,13 @@ def Get_Stream_Data(sim, Stream_Name):
 class MrsJoneEnergyGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("MrsJone 能量衡算 - 商业旗舰版 v4.9")
-        self.root.geometry("950x880")
+        self.root.title("MrsJone 能量衡算")
+        self.root.geometry("950x850")
+
+        # === 新增：彩蛋键盘监听缓冲区 ===
+        self.key_buffer = ""
+        self.root.bind("<Key>", self.check_easter_egg)
+        # ==============================
 
         self.sim = None
         self.doc = None
@@ -68,6 +92,7 @@ class MrsJoneEnergyGUI:
 
         self.gen_word = tk.BooleanVar(value=True)
         self.gen_excel = tk.BooleanVar(value=True)
+        self.sort_mode = tk.StringVar(value="default")
 
         self.export_options = {
             "流股名称": tk.BooleanVar(value=True),
@@ -83,6 +108,21 @@ class MrsJoneEnergyGUI:
         self.create_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+    # === 新增：彩蛋触发函数 ===
+    def check_easter_egg(self, event):
+        if event.char:
+            # 记录按下的按键并转为小写
+            self.key_buffer += event.char.lower()
+            # 保持缓冲区长度为 7 (mrsjone 的长度)
+            self.key_buffer = self.key_buffer[-7:]
+
+            # 检查是否匹配彩蛋口令
+            if self.key_buffer == "mrsjone":
+                messagebox.showinfo("🎉 发现彩蛋", "Hello, Aspener!")
+                self.key_buffer = ""  # 触发后清空缓冲区，防止连续触发
+
+    # ==========================
+
     def create_widgets(self):
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
@@ -91,7 +131,7 @@ class MrsJoneEnergyGUI:
         self.tab_preview = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_main, text="💻 控制面板")
-        self.notebook.add(self.tab_preview, text="👁️‍🗨️ 实时数据预览")
+        self.notebook.add(self.tab_preview, text="👁️‍🗨️ 实时能量平衡面板")
 
         self.setup_main_tab()
         self.setup_preview_tab()
@@ -102,7 +142,6 @@ class MrsJoneEnergyGUI:
         main = ttk.Frame(self.tab_main, padding=10)
         main.pack(fill="both", expand=True)
 
-        # --- 1. 环境连接区 ---
         group1 = ttk.LabelFrame(main, text="1. 环境连接", padding=10)
         group1.pack(fill="x", pady=5)
 
@@ -131,7 +170,6 @@ class MrsJoneEnergyGUI:
         self.close_btn = ttk.Button(conn_f, text="断开 Aspen", command=self.close_aspen, state="disabled")
         self.close_btn.pack(side="left", padx=5)
 
-        # --- 2. 模块选择区 ---
         group2 = ttk.LabelFrame(main, text="2. 指定模块提取 (按住 Ctrl 可多选)", padding=10)
         group2.pack(fill="x", pady=5)
 
@@ -149,15 +187,20 @@ class MrsJoneEnergyGUI:
         ttk.Button(btn_frame, text="全选", command=self.select_all_blocks).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="清空选择", command=self.clear_selection).pack(side="left")
 
-        # --- 3. 导出格式与字段选择 ---
         group3 = ttk.LabelFrame(main, text="3. 导出控制与表格字段", padding=10)
         group3.pack(fill="x", pady=5)
 
         format_frame = ttk.Frame(group3)
         format_frame.pack(fill="x", pady=2)
-        ttk.Label(format_frame, text="生成报告类型:").pack(side="left", padx=5)
-        ttk.Checkbutton(format_frame, text="汇总 Word 文档", variable=self.gen_word).pack(side="left", padx=15)
-        ttk.Checkbutton(format_frame, text="每个模块独立的 Excel", variable=self.gen_excel).pack(side="left")
+        ttk.Label(format_frame, text="报告格式:").pack(side="left", padx=5)
+        ttk.Checkbutton(format_frame, text="Word 汇总", variable=self.gen_word).pack(side="left", padx=5)
+        ttk.Checkbutton(format_frame, text="Excel 明细", variable=self.gen_excel).pack(side="left")
+
+        ttk.Label(format_frame, text=" |  Word 输出排序:").pack(side="left", padx=(15, 5))
+        ttk.Radiobutton(format_frame, text="默认(按提取顺序)", variable=self.sort_mode, value="default").pack(
+            side="left", padx=5)
+        ttk.Radiobutton(format_frame, text="按模块类型(如换热器分组)", variable=self.sort_mode, value="by_type").pack(
+            side="left", padx=5)
 
         ttk.Separator(group3, orient='horizontal').pack(fill='x', pady=8)
 
@@ -173,7 +216,6 @@ class MrsJoneEnergyGUI:
                 col = 0
                 row += 1
 
-        # --- 4. 运行控制 ---
         group4 = ttk.LabelFrame(main, text="4. 运行", padding=10)
         group4.pack(fill="x", pady=5)
         self.run_btn = ttk.Button(group4, text="开始提取选中模块", command=self.start_batch_run, state="disabled")
@@ -181,17 +223,8 @@ class MrsJoneEnergyGUI:
         self.progress = ttk.Progressbar(group4, mode="determinate")
         self.progress.pack(fill="x", pady=5)
 
-        # --- 5. 作者信息与日志工具栏 ---
         info_frame = ttk.Frame(main, padding=5)
         info_frame.pack(fill="x")
-
-        # === 专属作者信息区 ===
-        author_frame = ttk.Frame(info_frame)
-        author_frame.pack(fill="x", pady=(0, 5))
-        ttk.Label(author_frame, text="QQ技术交流群号: 562721026", foreground="#444444", font=("微软雅黑", 9)).pack(
-            side="left", padx=(0, 20))
-        ttk.Label(author_frame, text="个人博客及其网站: mrsjone.top", foreground="#444444", font=("微软雅黑", 9)).pack(
-            side="left")
 
         log_tool_frame = ttk.Frame(info_frame)
         log_tool_frame.pack(fill="x")
@@ -208,7 +241,8 @@ class MrsJoneEnergyGUI:
 
         tool_frame = ttk.Frame(preview_frame)
         tool_frame.pack(fill="x", pady=(0, 5))
-        ttk.Label(tool_frame, text="此表格实时展示本次提取的所有流股基础数据。", foreground="gray").pack(side="left")
+        ttk.Label(tool_frame, text="此表格实时展示各个模块的能量衡算结果。误差(Error)较大时将标红显示。",
+                  foreground="gray").pack(side="left")
         ttk.Button(tool_frame, text="清空表格", command=self.clear_treeview).pack(side="right")
 
         tree_frame = ttk.Frame(preview_frame)
@@ -219,25 +253,25 @@ class MrsJoneEnergyGUI:
         scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal")
         scroll_x.pack(side="bottom", fill="x")
 
-        columns = (
-        "Block", "Direction", "Stream", "Temp", "Pres", "VFrac", "MoleFlow", "MassFlow", "VolFlow", "Enthalpy")
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
-                                 yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        columns = ("Block", "Type", "W", "Q", "Hin", "Hout", "Error")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", yscrollcommand=scroll_y.set,
+                                 xscrollcommand=scroll_x.set)
+
+        self.tree.tag_configure("error_high", foreground="red", font=("微软雅黑", 9, "bold"))
+        self.tree.tag_configure("normal", foreground="black")
 
         scroll_y.config(command=self.tree.yview)
         scroll_x.config(command=self.tree.xview)
 
-        headings = ["所属模块", "进/出料", "流股名称", "温度(℃)", "压力(kPa)", "气相分率", "摩尔流量(kmol/h)",
-                    "质量流量(kg/h)", "体积流量(m3/h)", "焓值(kW)"]
-        widths = [100, 60, 100, 80, 80, 80, 110, 110, 110, 100]
+        headings = ["所属模块", "模块类型", "轴功 W (kW)", "热负荷 Q (kW)", "进料总焓 Hin (kW)", "出料总焓 Hout (kW)",
+                    "平衡误差 Error (kW)"]
+        widths = [120, 150, 110, 110, 130, 130, 140]
 
         for col, head, w in zip(columns, headings, widths):
             self.tree.heading(col, text=head)
             self.tree.column(col, width=w, anchor="center")
-
         self.tree.pack(side="left", fill="both", expand=True)
 
-    # === UI 辅助函数 ===
     def set_indicator(self, color):
         self.status_canvas.itemconfig(self.indicator, fill=color)
         self.root.update()
@@ -268,7 +302,6 @@ class MrsJoneEnergyGUI:
     def clear_selection(self):
         self.block_listbox.selection_clear(0, tk.END)
 
-    # === 核心交互函数 ===
     def connect_aspen(self):
         if not self.aspen_file.get():
             messagebox.showwarning("提示", "请先选择BKP文件")
@@ -339,34 +372,71 @@ class MrsJoneEnergyGUI:
 
         if self.gen_word.get():
             self.doc = Document()
-            self.doc.add_heading('Aspen Plus 选定模块能量衡算报告', 0)
-            self.doc.add_paragraph(f"沧州交通学院 | 导出时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        self.progress["maximum"] = len(selected_indices)
-        self.log(f"=== 开始提取任务 (共选定 {len(selected_indices)} 个模块) ===")
+            main_heading = self.doc.add_heading('', level=0)
+            run = main_heading.add_run('Aspen Plus 选定模块能量衡算报告')
+            run.font.name = '黑体'
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), '黑体')
+            run.font.color.rgb = RGBColor(0, 0, 0)
+
+            self.doc.add_paragraph(f"导出时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            self.doc.add_paragraph("有问题可以加联系方式: wenxiaoshuo12138")
+            self.doc.add_paragraph("可以加群讨论: 562721026")
+
+        selected_blocks = [self.block_listbox.get(idx) for idx in selected_indices]
+        self.progress["maximum"] = len(selected_blocks)
+        self.log(f"=== 开始提取任务 (共选定 {len(selected_blocks)} 个模块) ===")
 
         self.set_indicator("yellow")
         self.run_btn.config(state="disabled")
 
-        for i, idx in enumerate(selected_indices):
-            b_name = self.block_listbox.get(idx)
-            self.progress["value"] = i + 1
-            self.process_single_block(b_name)
-            self.root.update()
+        if self.sort_mode.get() == "by_type":
+            self.log("正在分析模块类型并重新排序...", "INFO")
+            block_dict = {}
+            for b_name in selected_blocks:
+                try:
+                    b_type_raw = str(
+                        self.sim.Tree.Elements("Data").Elements("Blocks").Elements(b_name).AttributeValue(6)).upper()
+                    if b_type_raw not in block_dict:
+                        block_dict[b_type_raw] = []
+                    block_dict[b_type_raw].append(b_name)
+                except:
+                    pass
+
+            count = 0
+            for b_type_raw, b_names in block_dict.items():
+                if self.gen_word.get():
+                    p = self.doc.add_paragraph()
+                    type_zh = BLOCK_TYPE_MAP.get(b_type_raw, b_type_raw)
+                    run = p.add_run(f"\n【{type_zh} ({b_type_raw}) 设备组汇总】")
+                    run.font.size = Pt(16)
+                    run.font.bold = True
+                    run.font.color.rgb = RGBColor(0, 51, 153)
+                for b_name in b_names:
+                    count += 1
+                    self.progress["value"] = count
+                    self.process_single_block(b_name)
+                    self.root.update()
+        else:
+            for i, b_name in enumerate(selected_blocks):
+                self.progress["value"] = i + 1
+                self.process_single_block(b_name)
+                self.root.update()
 
         if self.gen_word.get():
             fname = f"能量衡算报告_{int(time.time())}.docx"
             self.doc.save(fname)
             self.log(f"【提取完成】汇总Word已保存: {fname}", "SUCCESS")
-        else:
+
+        if self.gen_excel.get():
             self.log("【提取完成】选定模块的 Excel 数据已生成。", "SUCCESS")
 
         self.set_indicator("green")
         self.run_btn.config(state="normal")
-
         self.notebook.select(self.tab_preview)
 
-        if messagebox.askyesno("全部完成", "提取任务已完成！\n数据已在[预览面板]展示。\n是否立即打开输出文件夹查看报告？"):
+        if messagebox.askyesno("全部完成",
+                               "提取任务已完成！\n数据已在[实时能量平衡面板]展示。\n是否立即打开输出文件夹查看报告？"):
             self.open_output_folder()
 
     def process_single_block(self, b_name):
@@ -374,6 +444,8 @@ class MrsJoneEnergyGUI:
             blk = self.sim.Tree.Elements("Data").Elements("Blocks").Elements(b_name)
             b_type = str(blk.AttributeValue(6)).upper()
             port = blk.Elements("Ports")
+
+            b_type_zh = BLOCK_TYPE_MAP.get(b_type, b_type)
 
             selected_headers = [name for name, var in self.export_options.items() if var.get()]
             if not selected_headers:
@@ -394,9 +466,7 @@ class MrsJoneEnergyGUI:
 
                 for tag in ta:
                     for i in [n.Name for n in port.Elements(tag).Elements]:
-                        if [n.Name for n in port.Elements(tag).Elements] is None:
-                            break
-
+                        if [n.Name for n in port.Elements(tag).Elements] is None: break
                         raw_data = Get_Stream_Data(self.sim, i)
                         direction = "IN" if "IN" in tag else "OUT"
 
@@ -404,16 +474,6 @@ class MrsJoneEnergyGUI:
                             Hin += raw_data[7]
                         else:
                             Hout += raw_data[7]
-
-                        def fmt(val):
-                            return f"{val:.4f}" if isinstance(val, (int, float)) and val < 1 else (
-                                f"{val:.2f}" if isinstance(val, (int, float)) else str(val))
-
-                        tree_values = (
-                            b_name, direction, raw_data[0], fmt(raw_data[1]), fmt(raw_data[2]),
-                            fmt(raw_data[3]), fmt(raw_data[4]), fmt(raw_data[5]), fmt(raw_data[6]), fmt(raw_data[7])
-                        )
-                        self.tree.insert("", "end", values=tree_values)
 
                         filtered_data = [raw_data[idx] for idx, (key, var) in enumerate(self.export_options.items()) if
                                          var.get()]
@@ -436,11 +496,21 @@ class MrsJoneEnergyGUI:
                     Q = self.sim.Tree.FindNode(f'\\Data\\Blocks\\{b_name}\\Output\\DUTY_OUT').Value * 0.0041868
 
             if is_valid:
+                error = Hin - Hout + Q + W
+
+                def fmt(val):
+                    return f"{val:.4f}" if isinstance(val, (int, float)) else str(val)
+
+                tree_values = (b_name, b_type_zh, fmt(W), fmt(Q), fmt(Hin), fmt(Hout), fmt(error))
+
+                row_tag = "error_high" if abs(error) > 0.01 else "normal"
+                self.tree.insert("", "end", values=tree_values, tags=(row_tag,))
+
                 if self.gen_excel.get():
                     self.export_individual_excel(b_name, table_cols, W, Q, Hin, Hout)
                 if self.gen_word.get():
-                    self.append_to_word(b_name, b_type, table_cols, W, Q, Hin, Hout)
-                self.log(f"模块 {b_name} ({b_type}) 提取成功", "SUCCESS")
+                    self.append_to_word(b_name, b_type_zh, b_type, table_cols, W, Q, Hin, Hout)
+                self.log(f"模块 {b_name} ({b_type_zh}) 提取成功", "SUCCESS")
             else:
                 self.log(f"模块 {b_name} 类型 [{b_type}] 暂不支持或非衡算模块，已跳过。")
 
@@ -459,10 +529,15 @@ class MrsJoneEnergyGUI:
         except Exception as e:
             self.log(f"导出 Excel 失败: {e}", "ERROR")
 
-    def append_to_word(self, b_name, b_type, table_cols, W, Q, Hin, Hout):
+    def append_to_word(self, b_name, b_type_zh, b_type_raw, table_cols, W, Q, Hin, Hout):
         doc = self.doc
         doc.add_page_break()
-        doc.add_heading(f'模块: {b_name} ({b_type})', level=1)
+
+        p_heading = doc.add_paragraph()
+        run = p_heading.add_run(f'模块: {b_name} ({b_type_zh} - {b_type_raw})')
+        run.font.size = Pt(14)
+        run.font.color.rgb = RGBColor(0, 0, 0)
+        run.font.bold = True
 
         df1 = pd.DataFrame(["热负荷/功", W, Q], index=["项目", "W (kW)", "Q (kW)"]).T
         df2 = pd.concat(table_cols, axis=1)
@@ -470,7 +545,13 @@ class MrsJoneEnergyGUI:
                            index=["W(kW)", "Q(kW)", "Hin(kW)", "Hout(kW)", "Error"]).T
 
         for title, df in [("表1：负荷数据", df1), ("表2：流股数据明细", df2), ("表3：能量平衡验证", df3)]:
-            doc.add_heading(title, level=2)
+            p_title = doc.add_paragraph()
+            p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            t_run = p_title.add_run(title)
+            t_run.font.size = Pt(10.5)
+            t_run.font.name = '黑体'
+            t_run._element.rPr.rFonts.set(qn('w:eastAsia'), '黑体')
+
             table = doc.add_table(rows=df.shape[0] + 1, cols=df.shape[1])
             table.style = 'Table Grid'
             for j, col in enumerate(df.columns):
@@ -487,6 +568,7 @@ class MrsJoneEnergyGUI:
     def browse_folder(self):
         d = filedialog.askdirectory()
         if d: self.save_dir.set(d)
+
     def open_output_folder(self):
         path = self.save_dir.get()
         if path and os.path.exists(path):
@@ -497,6 +579,7 @@ class MrsJoneEnergyGUI:
                 self.log(f"无法打开文件夹: {e}", "ERROR")
         else:
             messagebox.showwarning("提示", "请先选择一个有效的输出目录！")
+
     def on_closing(self):
         if self.sim: self.close_aspen()
         self.root.destroy()
