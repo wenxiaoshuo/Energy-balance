@@ -1,4 +1,4 @@
-# MrsJone 能量衡算工具 v4.9
+# MrsJone 能量衡算
 > Aspen Plus 自动化数据提取与能量衡算报告生成工具
 
 基于 Python + Tkinter 开发，通过 COM 接口直连 Aspen Plus，一键提取模块进出料流股数据、热负荷、轴功率，自动生成标准化 Word 汇总报告与 Excel 明细文件，完成能量平衡校验，大幅提升化工流程数据处理效率。
